@@ -365,9 +365,9 @@ func TestBuildAcceptedCondition(t *testing.T) {
 	// Test other condition types that should result in True status and keep the original type.
 	condition = buildAcceptedCondition(3, "test-controller", "SomeOtherType", "other message")
 
-	require.Equal(t, "SomeOtherType", condition.Type)        // Type is preserved for non-"NotAccepted" types
-	require.Equal(t, metav1.ConditionTrue, condition.Status) // Status is True for non-"NotAccepted" types
-	require.Equal(t, "Accepted", condition.Reason)           // Reason is "Accepted" for non-"NotAccepted" types
+	require.Equal(t, "SomeOtherType", condition.Type)        // Type is preserved for non-"NotAccepted" types.
+	require.Equal(t, metav1.ConditionTrue, condition.Status) // Status is True for non-"NotAccepted" types.
+	require.Equal(t, "Accepted", condition.Reason)           // Reason is "Accepted" for non-"NotAccepted" types.
 	require.Contains(t, condition.Message, "InferencePool has been Accepted by controller test-controller: other message")
 	require.Equal(t, int64(3), condition.ObservedGeneration)
 }
@@ -726,7 +726,7 @@ func TestInferencePoolController_EdgeCases(t *testing.T) {
 				"app": "test-app",
 			},
 			TargetPortNumber: 8080,
-			// No ExtensionRef
+			// No ExtensionRef.
 		},
 	}
 	require.NoError(t, fakeClient.Create(context.Background(), inferencePoolNoExtRef))
@@ -754,7 +754,7 @@ func TestInferencePoolController_EdgeCases(t *testing.T) {
 			EndpointPickerConfig: gwaiev1a2.EndpointPickerConfig{
 				ExtensionRef: &gwaiev1a2.Extension{
 					ExtensionReference: gwaiev1a2.ExtensionReference{
-						Name: "", // Empty name
+						Name: "", // Empty name.
 					},
 				},
 			},
@@ -930,7 +930,7 @@ func TestInferencePoolController_UpdateInferencePoolStatus(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "test-inference-pool",
 			Namespace:  "default",
-			Generation: 5, // Set a specific generation for testing
+			Generation: 5, // Set a specific generation for testing.
 		},
 		Spec: gwaiev1a2.InferencePoolSpec{
 			Selector: map[gwaiev1a2.LabelKey]gwaiev1a2.LabelValue{
@@ -977,4 +977,200 @@ func TestInferencePoolController_UpdateInferencePoolStatus(t *testing.T) {
 	require.NotNil(t, resolvedRefsCondition, "Should have ResolvedRefs condition")
 	require.Equal(t, metav1.ConditionTrue, resolvedRefsCondition.Status)
 	require.Equal(t, "ResolvedRefs", resolvedRefsCondition.Reason)
+}
+
+func TestInferencePoolController_GetReferencedGateways_ErrorHandling(t *testing.T) {
+	fakeClient := requireNewFakeClientWithIndexesAndInferencePool(t)
+	c := NewInferencePoolController(fakeClient, kubefake.NewSimpleClientset(), ctrl.Log)
+
+	// Create an InferencePool.
+	inferencePool := &gwaiev1a2.InferencePool{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-inference-pool",
+			Namespace: "default",
+		},
+		Spec: gwaiev1a2.InferencePoolSpec{
+			Selector: map[gwaiev1a2.LabelKey]gwaiev1a2.LabelValue{
+				"app": "test-app",
+			},
+			TargetPortNumber: 8080,
+		},
+	}
+
+	// Test getReferencedGateways with various scenarios.
+	gateways, err := c.getReferencedGateways(context.Background(), inferencePool)
+	require.NoError(t, err)
+	require.Empty(t, gateways, "Should return empty list when no routes reference the InferencePool")
+
+	// Create an AIGatewayRoute that references the InferencePool but no Gateway.
+	aiGatewayRoute := &aigv1a1.AIGatewayRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-route-no-gateway",
+			Namespace: "default",
+		},
+		Spec: aigv1a1.AIGatewayRouteSpec{
+			Rules: []aigv1a1.AIGatewayRouteRule{
+				{
+					BackendRefs: []aigv1a1.AIGatewayRouteRuleBackendRef{
+						{
+							Name:  "test-inference-pool",
+							Group: ptr.To("inference.networking.x-k8s.io"),
+							Kind:  ptr.To("InferencePool"),
+						},
+					},
+				},
+			},
+		},
+	}
+	require.NoError(t, fakeClient.Create(context.Background(), aiGatewayRoute))
+
+	gateways, err = c.getReferencedGateways(context.Background(), inferencePool)
+	require.NoError(t, err)
+	require.Empty(t, gateways, "Should return empty list when route has no parent refs")
+}
+
+func TestInferencePoolController_GatewayReferencesInferencePool_HTTPRoute(t *testing.T) {
+	fakeClient := requireNewFakeClientWithIndexesAndInferencePool(t)
+	c := NewInferencePoolController(fakeClient, kubefake.NewSimpleClientset(), ctrl.Log)
+
+	// Create a Gateway.
+	gateway := &gwapiv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-gateway",
+			Namespace: "default",
+		},
+		Spec: gwapiv1.GatewaySpec{
+			GatewayClassName: "test-class",
+		},
+	}
+	require.NoError(t, fakeClient.Create(context.Background(), gateway))
+
+	// Create an HTTPRoute that references the Gateway and InferencePool.
+	httpRoute := &gwapiv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-http-route",
+			Namespace: "test-namespace",
+		},
+		Spec: gwapiv1.HTTPRouteSpec{
+			CommonRouteSpec: gwapiv1.CommonRouteSpec{
+				ParentRefs: []gwapiv1.ParentReference{
+					{
+						Name:      "test-gateway",
+						Namespace: ptr.To(gwapiv1.Namespace("default")),
+					},
+				},
+			},
+			Rules: []gwapiv1.HTTPRouteRule{
+				{
+					BackendRefs: []gwapiv1.HTTPBackendRef{
+						{
+							BackendRef: gwapiv1.BackendRef{
+								BackendObjectReference: gwapiv1.BackendObjectReference{
+									Group: ptr.To(gwapiv1.Group("inference.networking.x-k8s.io")),
+									Kind:  ptr.To(gwapiv1.Kind("InferencePool")),
+									Name:  "test-inference-pool",
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	require.NoError(t, fakeClient.Create(context.Background(), httpRoute))
+
+	// Test positive case - Gateway references InferencePool through HTTPRoute.
+	result := c.gatewayReferencesInferencePool(context.Background(), gateway, "test-inference-pool", "test-namespace")
+	require.True(t, result, "Should return true when Gateway references InferencePool through HTTPRoute")
+
+	// Test negative case - different InferencePool name.
+	result = c.gatewayReferencesInferencePool(context.Background(), gateway, "different-pool", "test-namespace")
+	require.False(t, result, "Should return false when Gateway doesn't reference the specified InferencePool")
+
+	// Test negative case - different namespace.
+	result = c.gatewayReferencesInferencePool(context.Background(), gateway, "test-inference-pool", "different-namespace")
+	require.False(t, result, "Should return false when InferencePool is in different namespace")
+}
+
+func TestInferencePoolController_ValidateExtensionReference_EdgeCases(t *testing.T) {
+	fakeClient := requireNewFakeClientWithIndexesAndInferencePool(t)
+	c := NewInferencePoolController(fakeClient, kubefake.NewSimpleClientset(), ctrl.Log)
+
+	// Test with nil ExtensionRef.
+	inferencePoolNilExt := &gwaiev1a2.InferencePool{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-inference-pool-nil-ext",
+			Namespace: "default",
+		},
+		Spec: gwaiev1a2.InferencePoolSpec{
+			Selector: map[gwaiev1a2.LabelKey]gwaiev1a2.LabelValue{
+				"app": "test-app",
+			},
+			TargetPortNumber: 8080,
+			// No EndpointPickerConfig.
+		},
+	}
+
+	err := c.validateExtensionReference(context.Background(), inferencePoolNilExt)
+	require.NoError(t, err, "Should not error when ExtensionRef is nil")
+
+	// Test with ExtensionRef but nil ExtensionRef field.
+	inferencePoolNilExtRef := &gwaiev1a2.InferencePool{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-inference-pool-nil-extref",
+			Namespace: "default",
+		},
+		Spec: gwaiev1a2.InferencePoolSpec{
+			Selector: map[gwaiev1a2.LabelKey]gwaiev1a2.LabelValue{
+				"app": "test-app",
+			},
+			TargetPortNumber:     8080,
+			EndpointPickerConfig: gwaiev1a2.EndpointPickerConfig{
+				// ExtensionRef is nil.
+			},
+		},
+	}
+
+	err = c.validateExtensionReference(context.Background(), inferencePoolNilExtRef)
+	require.NoError(t, err, "Should not error when ExtensionRef field is nil")
+
+	// Test with service in different namespace (should fail).
+	serviceOtherNS := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "service-other-ns",
+			Namespace: "other-namespace",
+		},
+		Spec: corev1.ServiceSpec{
+			Ports: []corev1.ServicePort{
+				{
+					Port: 9002,
+				},
+			},
+		},
+	}
+	require.NoError(t, fakeClient.Create(context.Background(), serviceOtherNS))
+
+	inferencePoolOtherNS := &gwaiev1a2.InferencePool{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-inference-pool-other-ns",
+			Namespace: "default", // InferencePool in default namespace.
+		},
+		Spec: gwaiev1a2.InferencePoolSpec{
+			Selector: map[gwaiev1a2.LabelKey]gwaiev1a2.LabelValue{
+				"app": "test-app",
+			},
+			TargetPortNumber: 8080,
+			EndpointPickerConfig: gwaiev1a2.EndpointPickerConfig{
+				ExtensionRef: &gwaiev1a2.Extension{
+					ExtensionReference: gwaiev1a2.ExtensionReference{
+						Name: "service-other-ns", // Service in other-namespace.
+					},
+				},
+			},
+		},
+	}
+
+	err = c.validateExtensionReference(context.Background(), inferencePoolOtherNS)
+	require.Error(t, err, "Should error when ExtensionReference service is in different namespace")
+	require.Contains(t, err.Error(), "ExtensionReference service service-other-ns not found in namespace default")
 }

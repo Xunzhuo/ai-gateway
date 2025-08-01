@@ -39,7 +39,8 @@ func TestGatewayAPIInferenceExtension(t *testing.T) {
 	options.TimeoutConfig = defaultTimeoutConfig
 	options.GatewayClassName = "inference-pool"
 	options.SkipTests = []string{
-		"EppUnAvailableFailOpen"}
+		"EppUnAvailableFailOpen",
+	}
 
 	gie.RunConformanceWithOptions(t, options)
 }
