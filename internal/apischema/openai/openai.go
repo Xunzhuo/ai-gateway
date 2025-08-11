@@ -10,9 +10,12 @@ package openai
 
 import (
 	"bytes"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -1107,14 +1110,73 @@ type EmbeddingResponse struct {
 	Usage EmbeddingUsage `json:"usage"`
 }
 
+// EmbeddingVector represents an embedding vector that can be in float or base64 format.
+type EmbeddingVector []float64
+
+// UnmarshalJSONWithFormat unmarshals embedding data with a known encoding format.
+func (ev *EmbeddingVector) UnmarshalJSONWithFormat(data []byte, encodingFormat *string) error {
+	floats, err := ParseEmbeddingData(data, encodingFormat)
+	if err != nil {
+		return err
+	}
+	*ev = EmbeddingVector(floats)
+	return nil
+}
+
+// ToFloat64Slice returns the embedding as a []float64 slice.
+func (ev EmbeddingVector) ToFloat64Slice() []float64 {
+	return []float64(ev)
+}
+
+// ParseEmbeddingData parses embedding data based on the specified encoding format.
+func ParseEmbeddingData(data []byte, encodingFormat *string) ([]float64, error) {
+	// Default to float format if not specified
+	if encodingFormat == nil || *encodingFormat == "" || *encodingFormat == "float" {
+		var floats []float64
+		if err := json.Unmarshal(data, &floats); err != nil {
+			return nil, fmt.Errorf("failed to parse float array embedding: %w", err)
+		}
+		return floats, nil
+	}
+
+	if *encodingFormat == "base64" {
+		var base64Str string
+		if err := json.Unmarshal(data, &base64Str); err != nil {
+			return nil, fmt.Errorf("failed to parse base64 string embedding: %w", err)
+		}
+
+		// Decode base64 string
+		decoded, err := base64.StdEncoding.DecodeString(base64Str)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode base64 embedding: %w", err)
+		}
+
+		// Convert bytes to float64 array
+		// Each float64 is 8 bytes in little-endian format
+		if len(decoded)%8 != 0 {
+			return nil, fmt.Errorf("invalid base64 embedding length: %d bytes, expected multiple of 8", len(decoded))
+		}
+
+		floats := make([]float64, len(decoded)/8)
+		for i := 0; i < len(floats); i++ {
+			bits := binary.LittleEndian.Uint64(decoded[i*8 : (i+1)*8])
+			floats[i] = math.Float64frombits(bits)
+		}
+
+		return floats, nil
+	}
+
+	return nil, fmt.Errorf("unsupported encoding format: %s", *encodingFormat)
+}
+
 // Embedding represents a single embedding vector.
 // https://platform.openai.com/docs/api-reference/embeddings/object#embeddings/object-data
 type Embedding struct {
 	// Object: The object type, which is always "embedding".
 	Object string `json:"object"`
 
-	// Embedding: The embedding vector, which is a list of floats. The length of vector depends on the model as listed in the embedding guide.
-	Embedding []float64 `json:"embedding"`
+	// Embedding: The embedding vector, which can be a list of floats or base64 encoded string.
+	Embedding EmbeddingVector `json:"embedding"`
 
 	// Index: The index of the embedding in the list of embeddings.
 	Index int `json:"index"`

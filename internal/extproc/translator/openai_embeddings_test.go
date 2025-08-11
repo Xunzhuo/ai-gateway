@@ -6,7 +6,12 @@
 package translator
 
 import (
+	"bytes"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
+	"fmt"
+	"math"
 	"strings"
 	"testing"
 
@@ -88,11 +93,12 @@ func TestOpenAIToOpenAITranslatorV1EmbeddingResponseHeaders(t *testing.T) {
 
 func TestOpenAIToOpenAITranslatorV1EmbeddingResponseBody(t *testing.T) {
 	for _, tc := range []struct {
-		name           string
-		responseBody   string
-		responseStatus string
-		expTokenUsage  LLMTokenUsage
-		expError       bool
+		name                string
+		responseBody        string
+		responseStatus      string
+		expTokenUsage       LLMTokenUsage
+		expError            bool
+		setupEncodingFormat string // Optional: set encoding format before testing.
 	}{
 		{
 			name: "valid_response",
@@ -124,6 +130,44 @@ func TestOpenAIToOpenAITranslatorV1EmbeddingResponseBody(t *testing.T) {
 			expTokenUsage: LLMTokenUsage{},
 		},
 		{
+			name: "base64_encoded_embedding",
+			responseBody: func() string {
+				// Create test data: [0.1, 0.2, 0.3] as float64 in little-endian bytes.
+				testFloats := []float64{0.1, 0.2, 0.3}
+				var buf bytes.Buffer
+				for _, f := range testFloats {
+					bits := math.Float64bits(f)
+					err := binary.Write(&buf, binary.LittleEndian, bits)
+					if err != nil {
+						panic(err) // This should never happen in tests.
+					}
+				}
+				base64Str := base64.StdEncoding.EncodeToString(buf.Bytes())
+
+				return fmt.Sprintf(`{
+					"object": "list",
+					"data": [
+						{
+							"object": "embedding",
+							"embedding": "%s",
+							"index": 0
+						}
+					],
+					"model": "text-embedding-ada-002",
+					"usage": {
+						"prompt_tokens": 5,
+						"total_tokens": 5
+					}
+				}`, base64Str)
+			}(),
+			expTokenUsage: LLMTokenUsage{
+				InputTokens:  5,
+				OutputTokens: 0,
+				TotalTokens:  5,
+			},
+			setupEncodingFormat: "base64", // This will be used to set up the translator.
+		},
+		{
 			name:           "error_response",
 			responseBody:   `{"error": {"message": "Invalid input", "type": "BadRequestError"}}`,
 			responseStatus: "400",
@@ -132,6 +176,17 @@ func TestOpenAIToOpenAITranslatorV1EmbeddingResponseBody(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			translator := NewEmbeddingOpenAIToOpenAITranslator("v1", "")
+
+			// Set up encoding format if specified.
+			if tc.setupEncodingFormat != "" {
+				req := &openai.EmbeddingRequest{
+					EncodingFormat: &tc.setupEncodingFormat,
+				}
+				// Call RequestBody to set the encoding format.
+				_, _, err := translator.RequestBody([]byte(`{}`), req, false)
+				require.NoError(t, err)
+			}
+
 			respHeaders := map[string]string{
 				"content-type": "application/json",
 			}

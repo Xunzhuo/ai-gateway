@@ -6,7 +6,12 @@
 package openai
 
 import (
+	"bytes"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
+	"fmt"
+	"math"
 	"testing"
 	"time"
 
@@ -967,5 +972,135 @@ func TestChatCompletionResponseChunkChoice(t *testing.T) {
 
 		expected := `{"index":0,"delta":{"role":"assistant","tool_calls":[{"id":"tooluse_QklrEHKjRu6Oc4BQUfy7ZQ","function":{"arguments":"","name":"cosine"},"type":"function"}]}}`
 		require.JSONEq(t, expected, string(jsonData))
+	})
+}
+
+func TestEmbeddingVector_UnmarshalJSONWithFormat(t *testing.T) {
+	t.Run("float array format", func(t *testing.T) {
+		var ev EmbeddingVector
+		err := ev.UnmarshalJSONWithFormat([]byte(`[0.1, 0.2, 0.3, 0.4, 0.5]`), nil)
+		require.NoError(t, err)
+		expected := []float64{0.1, 0.2, 0.3, 0.4, 0.5}
+		require.Equal(t, expected, ev.ToFloat64Slice())
+	})
+
+	t.Run("float format explicit", func(t *testing.T) {
+		floatFormat := "float"
+		var ev EmbeddingVector
+		err := ev.UnmarshalJSONWithFormat([]byte(`[0.1, 0.2, 0.3, 0.4, 0.5]`), &floatFormat)
+		require.NoError(t, err)
+		expected := []float64{0.1, 0.2, 0.3, 0.4, 0.5}
+		require.Equal(t, expected, ev.ToFloat64Slice())
+	})
+
+	t.Run("base64 format", func(t *testing.T) {
+		// Create test data: [1.0, 2.0, 3.0] as float64 in little-endian bytes.
+		testFloats := []float64{1.0, 2.0, 3.0}
+		var buf bytes.Buffer
+		for _, f := range testFloats {
+			bits := math.Float64bits(f)
+			err := binary.Write(&buf, binary.LittleEndian, bits)
+			require.NoError(t, err)
+		}
+		base64Str := base64.StdEncoding.EncodeToString(buf.Bytes())
+
+		base64Format := "base64"
+		var ev EmbeddingVector
+		jsonData := fmt.Sprintf(`"%s"`, base64Str)
+		err := ev.UnmarshalJSONWithFormat([]byte(jsonData), &base64Format)
+		require.NoError(t, err)
+
+		result := ev.ToFloat64Slice()
+		require.Len(t, result, 3)
+		require.InDelta(t, 1.0, result[0], 1e-10)
+		require.InDelta(t, 2.0, result[1], 1e-10)
+		require.InDelta(t, 3.0, result[2], 1e-10)
+	})
+
+	t.Run("invalid base64", func(t *testing.T) {
+		base64Format := "base64"
+		var ev EmbeddingVector
+		err := ev.UnmarshalJSONWithFormat([]byte(`"invalid-base64!"`), &base64Format)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "failed to decode base64 embedding")
+	})
+
+	t.Run("invalid base64 length", func(t *testing.T) {
+		// Create base64 with invalid length (not multiple of 8)
+		invalidBytes := []byte{1, 2, 3, 4, 5} // 5 bytes, not multiple of 8
+		base64Str := base64.StdEncoding.EncodeToString(invalidBytes)
+
+		base64Format := "base64"
+		var ev EmbeddingVector
+		jsonData := fmt.Sprintf(`"%s"`, base64Str)
+		err := ev.UnmarshalJSONWithFormat([]byte(jsonData), &base64Format)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "invalid base64 embedding length")
+	})
+
+	t.Run("unsupported format", func(t *testing.T) {
+		unsupportedFormat := "unsupported"
+		var ev EmbeddingVector
+		err := ev.UnmarshalJSONWithFormat([]byte(`[0.1, 0.2]`), &unsupportedFormat)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "unsupported encoding format")
+	})
+}
+
+func TestParseEmbeddingData(t *testing.T) {
+	t.Run("float format with nil encoding", func(t *testing.T) {
+		floats, err := ParseEmbeddingData([]byte(`[0.1, 0.2, 0.3]`), nil)
+		require.NoError(t, err)
+		expected := []float64{0.1, 0.2, 0.3}
+		require.Equal(t, expected, floats)
+	})
+
+	t.Run("float format explicit", func(t *testing.T) {
+		floatFormat := "float"
+		floats, err := ParseEmbeddingData([]byte(`[0.1, 0.2, 0.3]`), &floatFormat)
+		require.NoError(t, err)
+		expected := []float64{0.1, 0.2, 0.3}
+		require.Equal(t, expected, floats)
+	})
+
+	t.Run("base64 format", func(t *testing.T) {
+		// Create test data: [1.0, 2.0] as float64 in little-endian bytes.
+		testFloats := []float64{1.0, 2.0}
+		var buf bytes.Buffer
+		for _, f := range testFloats {
+			bits := math.Float64bits(f)
+			err := binary.Write(&buf, binary.LittleEndian, bits)
+			require.NoError(t, err)
+		}
+		base64Str := base64.StdEncoding.EncodeToString(buf.Bytes())
+
+		base64Format := "base64"
+		jsonData := fmt.Sprintf(`"%s"`, base64Str)
+		floats, err := ParseEmbeddingData([]byte(jsonData), &base64Format)
+		require.NoError(t, err)
+
+		require.Len(t, floats, 2)
+		require.InDelta(t, 1.0, floats[0], 1e-10)
+		require.InDelta(t, 2.0, floats[1], 1e-10)
+	})
+
+	t.Run("unsupported format", func(t *testing.T) {
+		unsupportedFormat := "unsupported"
+		_, err := ParseEmbeddingData([]byte(`[0.1, 0.2]`), &unsupportedFormat)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "unsupported encoding format")
+	})
+
+	t.Run("invalid float data", func(t *testing.T) {
+		_, err := ParseEmbeddingData([]byte(`"not a float array"`), nil)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "failed to parse float array embedding")
+	})
+
+	t.Run("invalid base64 data", func(t *testing.T) {
+		base64Format := "base64"
+		_, err := ParseEmbeddingData([]byte(`"invalid-base64!"`), &base64Format)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "failed to decode base64 embedding")
 	})
 }
